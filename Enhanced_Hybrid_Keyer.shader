@@ -1,8 +1,6 @@
-// Enhanced Hybrid Keyer 3.0
+// Enhanced Hybrid Keyer 3.1 by Eki "Halsu" Halkka and Razvan "zvix" Olariu
 // Chroma Keying Shader for OBS Studio - works with obs-shaderfilter 2.4.3 by Exaldro 
-// Based on Hybrid keyer by Eki "Halsu" Halkka
-// Improved with fixes, optimizations, and new features by Razvan "zvix" Olariu
-
+// Further enhanced with optimizations and new features
 
 // ---- Key Settings ----
 uniform float4 Key_color<
@@ -27,6 +25,8 @@ uniform int Key_method<
   string option_1_label = "YUV Color Space (Best for blue screen)";
   int    option_2_value = 2;
   string option_2_label = "Hybrid (Best for difficult lighting)";
+  int    option_3_value = 3;
+  string option_3_label = "Multi-Layer (Best for complex scenes)";
 > = 0;
 
 uniform float Key_tolerance<
@@ -37,6 +37,43 @@ uniform float Key_tolerance<
   float maximum = 100.0;
   float step = 1.0;
 > = 50.0;
+
+// ---- Advanced Key Settings ----
+uniform bool Enable_multi_key<
+  string label = "Enable Multi-Color Keying";
+  string widget_type = "checkbox";
+  string group = "1. Key Settings";
+> = false;
+
+uniform float4 Secondary_key_color<
+  string label = "Secondary Key Color";
+  string widget_type = "color";
+  string group = "1. Key Settings";
+>;
+
+uniform float Secondary_key_weight<
+  string label = "Secondary Key Weight";
+  string widget_type = "slider";
+  string group = "1. Key Settings";
+  float minimum = 0.0;
+  float maximum = 100.0;
+  float step = 1.0;
+> = 50.0;
+
+uniform bool Enable_adaptive_sampling<
+  string label = "Enable Adaptive Color Sampling";
+  string widget_type = "checkbox";
+  string group = "1. Key Settings";
+> = false;
+
+uniform float Adaptive_sampling_radius<
+  string label = "Adaptive Sampling Radius";
+  string widget_type = "slider";
+  string group = "1. Key Settings";
+  float minimum = 1.0;
+  float maximum = 10.0;
+  float step = 1.0;
+> = 3.0;
 
 uniform float Prekey_despill<
   string label = "Prekey Despill";
@@ -92,8 +129,6 @@ uniform float Matte_shadows<
   float maximum = 100.0;
   float step = 1.0;
 > = 0.0;
-
-// Advanced matte controls now always visible
 
 uniform float Matte_offset_x<
   string label = "Matte Offset X";
@@ -334,6 +369,12 @@ uniform float Temporal_strength<
   float step = 1.0;
 > = 50.0;
 
+uniform bool Motion_aware<
+  string label = "Motion-Aware Filtering";
+  string widget_type = "checkbox";
+  string group = "7. Temporal Filter";
+> = true;
+
 // ---- Preview Options ----
 uniform int Preview_mode<
   string label = "Preview Mode";
@@ -351,12 +392,18 @@ uniform int Preview_mode<
   string option_4_label = "Edge Matte (Shows edge areas)";
   int    option_5_value = 5;
   string option_5_label = "Spill Matte (Shows spill areas)";
+  int    option_6_value = 6;
+  string option_6_label = "Adaptive Sampling Map";
+  int    option_7_value = 7;
+  string option_7_label = "Multi-Key Blend";
+  int    option_8_value = 8;
+  string option_8_label = "Motion Detection Map";
 > = 0;
 
 uniform string Notes<
   string widget_type = "info";
   string group = "Help";
-> = 'Enhanced Hybrid Keyer 3.0\n\nThis shader provides professional-grade chroma keying for OBS.\n\nWorkflow tips:\n1. Select the appropriate key color (green or blue screen)\n2. Adjust "Key Tolerance" until your subject is mostly separated\n3. Use "Background Cleanup" to remove background remnants\n4. Use "Foreground Opacity" to restore semi-transparent areas\n5. Adjust "Spill Reduction" to remove color spill on edges\n6. For hair edges: increase "Hair Detail Recovery" and "Edge Defringe"\n7. If edges flicker, try "Edge Softness" or "Temporal Filtering"\n\nFor best results with uneven lighting, use a reference image of the empty background.';
+> = 'Enhanced Hybrid Keyer 3.1\n\nNew Features:\n- Multi-Layer Keying: Separates keying process by luminance zones\n- Motion-Aware Temporal Filtering: Reduces ghosting artifacts\n- Improved Adaptive Sampling: Better handles uneven lighting\n- Enhanced Hair Detail Recovery: More precise edge detection\n- Advanced Spill Suppression: Intelligently handles colored edges\n\nWorkflow tips:\n1. Select the appropriate key color(s) for your screen\n2. Try different keying methods for your specific footage\n3. Enable Adaptive Sampling for uneven backgrounds\n4. Adjust "Key Tolerance" until your subject is mostly separated\n5. Use "Background Cleanup" and "Foreground Opacity" to refine\n6. Increase "Hair Detail Recovery" and "Edge Defringe" for better edges\n7. Enable Motion-Aware Temporal Filtering to reduce flickering';
 
 // ---- Global variables for temporal filtering ----
 uniform texture2d Last_frame;
@@ -381,23 +428,7 @@ float3 hsv2rgb(float3 c)
     return c.z * lerp(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
 }
 
-// Safely apply color correction to avoid division by zero
-float3 safeColorCorrection(float3 color, float3 keyColor, float factor)
-{
-    float3 result = color;
-    // Avoid division by zero by adding a small epsilon
-    float3 safeKeyColor = max(keyColor, 0.001);
-    
-    // Apply color correction
-    result.r = lerp(color.r, color.r / safeKeyColor.r, factor);
-    result.g = lerp(color.g, color.g / safeKeyColor.g, factor);
-    result.b = lerp(color.b, color.b / safeKeyColor.b, factor);
-    
-    return result;
-}
-
-// ******************************************************************************** MAIN **************************************************************
-
+// Main image function
 float4 mainImage(VertData v_in) : TARGET
 {
     // Convert slider values to appropriate ranges
@@ -419,6 +450,9 @@ float4 mainImage(VertData v_in) : TARGET
     float temporal_blend = Temporal_strength * 0.01;
     float edge_softness_factor = Edge_softness * 0.01;
     float key_tolerance_factor = Key_tolerance * 0.01;
+    float secondary_key_weight_factor = Secondary_key_weight * 0.01;
+    float hair_detail_value = Hair_detail_enhance * 0.01;
+    float defringe_value = Edge_color_remove * 0.01;
     
     // Color correction parameters
     float hue_adjustment = Hue_shift / 360.0;
@@ -428,28 +462,84 @@ float4 mainImage(VertData v_in) : TARGET
     
     // Working variables
     float4 color = float4(1.0, 1.0, 1.0, 1.0);
-    float4 raw_color;
-    float4 reference_color = float4(0.0, 0.0, 0.0, 0.0);
-    float4 key_color_working = Key_color;
-    float4 prev_frame = float4(0.0, 0.0, 0.0, 0.0);
-    float4 spill_matte = float4(0.0, 0.0, 0.0, 0.0);
-    float4 edge_matte = float4(0.0, 0.0, 0.0, 0.0);
-    float hue_offset = 0.0;
+    float4 rawColor = image.Sample(textureSampler, v_in.uv);
+    float4 keyColorWorking = Key_color;
+    float4 secondaryKeyWorking = Secondary_key_color;
+    float4 prevFrame = float4(0.0, 0.0, 0.0, 0.0);
+    float4 spillMatte = float4(0.0, 0.0, 0.0, 0.0);
+    float4 edgeMatte = float4(0.0, 0.0, 0.0, 0.0);
+    float4 adaptiveSampleMap = float4(0.0, 0.0, 0.0, 1.0);
+    float4 multiKeyMap = float4(0.0, 0.0, 0.0, 1.0);
+    float4 motionMap = float4(0.0, 0.0, 0.0, 1.0);
+    float hueOffset = 0.0;
+    float alpha = 0.0;
+    float alphaSecondary = 0.0;
     
     // Calculate matte offset
     float dx = 1.0 / uv_size.x;
     float dy = 1.0 / uv_size.y;
     float offset_x = Matte_offset_x * 0.01 * dx;
     float offset_y = Matte_offset_y * 0.01 * dy;
-    
-    // Sample the raw color from the image
-    raw_color = image.Sample(textureSampler, v_in.uv);
-    
-    // Apply matte offset
     float2 offset_uv = v_in.uv + float2(offset_x, offset_y);
+    
+    // Step 1: Sample raw image with offset
     color = image.Sample(textureSampler, offset_uv);
     
-    // Apply edge anti-aliasing if enabled
+    // Step 2: Apply adaptive sampling if enabled
+    // Replace the current adaptive sampling code with this version focused on green screens
+    if (Enable_adaptive_sampling)
+    {
+        float4 adaptiveKeyColor = Key_color; // Start with the user-selected key color as fallback
+        float bestGreenDominance = 0.0;
+        
+        int sampleRadius = int(Adaptive_sampling_radius);
+        
+        // First scan the perimeter of the search area to find good green screen samples
+        // This avoids sampling from the subject which is typically more central
+        for (int pass = 0; pass < 2; pass++) {
+            for (int i = -sampleRadius; i <= sampleRadius; i++) {
+                for (int j = -sampleRadius; j <= sampleRadius; j++) {
+                    // In first pass, only check perimeter points
+                    // In second pass, check all points if we haven't found a good sample yet
+                    if (pass == 0 && 
+                        !(i == -sampleRadius || i == sampleRadius || 
+                          j == -sampleRadius || j == sampleRadius)) {
+                        continue;
+                    }
+                    
+                    float2 offset = float2(i * dx, j * dy);
+                    float4 sampleCol = image.Sample(textureSampler, offset_uv + offset);
+                    
+                    // Specifically look for green dominance - this is crucial
+                    float greenMinThreshold = 0.15; // Minimum green value
+                    float greenDominance = sampleCol.g - max(sampleCol.r, sampleCol.b);
+                    
+                    // Only consider pixels where green is clearly the dominant channel
+                    if (sampleCol.g > greenMinThreshold && greenDominance > 0.1) {
+                        // Calculate sample quality based on green dominance and distance from center
+                        float sampleQuality = greenDominance;
+                        
+                        // Take the sample with the strongest green dominance
+                        if (sampleQuality > bestGreenDominance) {
+                            bestGreenDominance = sampleQuality;
+                            adaptiveKeyColor = sampleCol;
+                        }
+                    }
+                }
+            }
+            
+            // If we found a good sample in the first pass, no need for second pass
+            if (bestGreenDominance > 0.0 && pass == 0) {
+                break;
+            }
+        }
+        
+        // For visualization - show what's being used as the key color
+        adaptiveSampleMap.rgb = adaptiveKeyColor.rgb;
+        keyColorWorking = adaptiveKeyColor;
+    }
+    
+    // Step 3: Apply edge anti-aliasing if enabled
     if (Matte_antialising)
     {
         float4 sum = color;
@@ -472,61 +562,107 @@ float4 mainImage(VertData v_in) : TARGET
         // Calculate weighted average
         color = sum / weight;
         
-        // Restore some of the original green to avoid over-blurring
-        color.g = lerp(color.g, raw_color.g, 0.5);
+        // Restore some of the original key color to avoid over-blurring
+        // Determine dominant channel in key color
+        if (keyColorWorking.g > keyColorWorking.r && keyColorWorking.g > keyColorWorking.b) {
+            // Green screen case
+            color.g = lerp(color.g, rawColor.g, 0.5);
+        } else if (keyColorWorking.b > keyColorWorking.r && keyColorWorking.b > keyColorWorking.g) {
+            // Blue screen case
+            color.b = lerp(color.b, rawColor.b, 0.5);
+        } else {
+            // Red screen case
+            color.r = lerp(color.r, rawColor.r, 0.5);
+        }
     }
     
-    // Use reference image if enabled
+    // Step 4: Use reference image if enabled
+    float4 referenceColor = float4(0.0, 0.0, 0.0, 0.0);
     if (Use_reference_image)
     {
-        reference_color = Reference_image.Sample(textureSampler, v_in.uv);
+        referenceColor = Reference_image.Sample(textureSampler, v_in.uv);
         
         // Clean up background using reference image
-        color.rgb = lerp(color.rgb, (1.0 - reference_color.rgb), reference_strength_factor * 0.5);
-        key_color_working.rgb = reference_color.rgb;
+        color.rgb = lerp(color.rgb, referenceColor.rgb, reference_strength_factor);
+        keyColorWorking.rgb = referenceColor.rgb;
     }
     
-    // Convert to HSV for better color manipulation
-    float3 hsv_color = rgb2hsv(color.rgb);
-    float3 hsv_key = rgb2hsv(key_color_working.rgb);
-    float3 hsv_raw = rgb2hsv(raw_color.rgb);
+    // Store pre-processed color for preview
+    float4 prekeyColor = color;
     
-    // Calculate hue offset to align key color with pure green (0.33333)
-    if (hsv_key.x < 0.33333)
-        hue_offset = (0.33333 - hsv_key.x);
-    else
-        hue_offset = -(hsv_key.x - 0.33333);
+    // Step 5: Apply prekey processing
+    float3 hsvColor = rgb2hsv(color.rgb);
+    float3 hsvKey = rgb2hsv(keyColorWorking.rgb);
+    float3 hsvRaw = rgb2hsv(rawColor.rgb);
     
-    // Apply hue offset to align with pure green/blue for better chroma keying
-    hsv_color.x = hsv_color.x + hue_offset;
-    hsv_key.x = hsv_key.x + hue_offset;
-    hsv_raw.x = hsv_raw.x + hue_offset;
+    // Calculate hue offset to align key color with pure green/blue/red
+    if (keyColorWorking.g > keyColorWorking.r && keyColorWorking.g > keyColorWorking.b) {
+        // Green dominant - align to 0.33333 (green)
+        if (hsvKey.x < 0.33333)
+            hueOffset = (0.33333 - hsvKey.x);
+        else
+            hueOffset = -(hsvKey.x - 0.33333);
+    }
+    else if (keyColorWorking.b > keyColorWorking.r && keyColorWorking.b > keyColorWorking.g) {
+        // Blue dominant - align to 0.66667 (blue)
+        if (hsvKey.x < 0.66667)
+            hueOffset = (0.66667 - hsvKey.x);
+        else
+            hueOffset = -(hsvKey.x - 0.66667);
+    }
+    else {
+        // Red dominant - align to 0.0/1.0 (red)
+        if (hsvKey.x > 0.5)
+            hueOffset = (1.0 - hsvKey.x);
+        else
+            hueOffset = -hsvKey.x;
+    }
+    
+    // Apply hue offset to align with pure green/blue/red for better chroma keying
+    hsvColor.x = hsvColor.x + hueOffset;
+    hsvKey.x = hsvKey.x + hueOffset;
+    hsvRaw.x = hsvRaw.x + hueOffset;
     
     // Apply prekey saturation adjustment
-    hsv_color.y = hsv_color.y * (1.0 + prekey_saturate_factor);
-    hsv_key.y = hsv_key.y * (1.0 + prekey_saturate_factor);
+    hsvColor.y = hsvColor.y * (1.0 + prekey_saturate_factor);
+    hsvKey.y = hsvKey.y * (1.0 + prekey_saturate_factor);
     
     // Convert back to RGB
-    color.rgb = hsv2rgb(hsv_color);
-    key_color_working.rgb = hsv2rgb(hsv_key);
-    raw_color.rgb = hsv2rgb(hsv_raw);
+    color.rgb = hsv2rgb(hsvColor);
+    keyColorWorking.rgb = hsv2rgb(hsvKey);
+    rawColor.rgb = hsv2rgb(hsvRaw);
     
-    // Store pre-processed color for preview
-    float4 prekey_color = color;
+    // Apply prekey despill to reduce color contamination before keying
+    // Apply to the appropriate channel based on dominant color
+    if (keyColorWorking.g > keyColorWorking.r && keyColorWorking.g > keyColorWorking.b) {
+        // Green dominant
+        color.rb += prekey_despill_factor;
+    }
+    else if (keyColorWorking.b > keyColorWorking.r && keyColorWorking.b > keyColorWorking.g) {
+        // Blue dominant
+        color.rg += prekey_despill_factor;
+    }
+    else {
+        // Red dominant
+        color.gb += prekey_despill_factor;
+    }
     
-    // Apply prekey despill to reduce green contamination before keying
-    prekey_color.r += prekey_despill_factor;
-    prekey_color.b += prekey_despill_factor;
-    color.r += prekey_despill_factor;
-    color.b += prekey_despill_factor;
-    
-    // --------------- Chromakey section ---------------
-    float alpha = 0.0;
-    
+    // Step 6: Calculate alpha matte based on keying method
     if (Key_method == 0) // RGB Difference (Vlahos method)
     {
-        // Standard RGB difference keying (green dominance approach)
-        alpha = color.g - max(color.r, color.b);
+        // Determine which channel to key against based on key color
+        if (keyColorWorking.g > keyColorWorking.r && keyColorWorking.g > keyColorWorking.b) {
+            // Green screen
+            alpha = color.g - max(color.r, color.b);
+        }
+        else if (keyColorWorking.b > keyColorWorking.r && keyColorWorking.b > keyColorWorking.g) {
+            // Blue screen
+            alpha = color.b - max(color.r, color.g);
+        }
+        else {
+            // Red screen
+            alpha = color.r - max(color.g, color.b);
+        }
         
         // Apply key tolerance
         alpha = alpha * (1.0 + key_tolerance_factor);
@@ -539,9 +675,9 @@ float4 mainImage(VertData v_in) : TARGET
         float V = ((color.r - Y) * 0.713) + 0.5;
         
         // Reference key color in YUV
-        float Y2 = 0.299 * key_color_working.r + 0.587 * key_color_working.g + 0.114 * key_color_working.b;
-        float U2 = ((key_color_working.b - Y2) * 0.565) + 0.5;
-        float V2 = ((key_color_working.r - Y2) * 0.713) + 0.5;
+        float Y2 = 0.299 * keyColorWorking.r + 0.587 * keyColorWorking.g + 0.114 * keyColorWorking.b;
+        float U2 = ((keyColorWorking.b - Y2) * 0.565) + 0.5;
+        float V2 = ((keyColorWorking.r - Y2) * 0.713) + 0.5;
         
         // Calculate color difference in YUV space
         float3 yuv_diff = abs(float3(Y, U, V) / float3(Y2, U2, V2) - 1.0);
@@ -549,19 +685,32 @@ float4 mainImage(VertData v_in) : TARGET
         // Calculate alpha from color difference
         alpha = 1.0 - (key_tolerance_factor + 1.0) * max(yuv_diff.y, yuv_diff.z);
     }
-    else // Hybrid method (combines RGB and YUV)
+    else if (Key_method == 2) // Hybrid method
     {
-        // RGB difference component
-        float alpha_rgb = color.g - max(color.r, color.b);
+        float alpha_rgb = 0.0;
+        
+        // RGB component - adapt to the dominant channel
+        if (keyColorWorking.g > keyColorWorking.r && keyColorWorking.g > keyColorWorking.b) {
+            // Green screen
+            alpha_rgb = color.g - max(color.r, color.b);
+        }
+        else if (keyColorWorking.b > keyColorWorking.r && keyColorWorking.b > keyColorWorking.g) {
+            // Blue screen
+            alpha_rgb = color.b - max(color.r, color.g);
+        }
+        else {
+            // Red screen
+            alpha_rgb = color.r - max(color.g, color.b);
+        }
         
         // YUV component
         float Y = 0.299 * color.r + 0.587 * color.g + 0.114 * color.b;
         float U = ((color.b - Y) * 0.565) + 0.5;
         float V = ((color.r - Y) * 0.713) + 0.5;
         
-        float Y2 = 0.299 * key_color_working.r + 0.587 * key_color_working.g + 0.114 * key_color_working.b;
-        float U2 = ((key_color_working.b - Y2) * 0.565) + 0.5;
-        float V2 = ((key_color_working.r - Y2) * 0.713) + 0.5;
+        float Y2 = 0.299 * keyColorWorking.r + 0.587 * keyColorWorking.g + 0.114 * keyColorWorking.b;
+        float U2 = ((keyColorWorking.b - Y2) * 0.565) + 0.5;
+        float V2 = ((keyColorWorking.r - Y2) * 0.713) + 0.5;
         
         float3 yuv_diff = abs(float3(Y, U, V) / float3(Y2, U2, V2) - 1.0);
         float alpha_yuv = 1.0 - 2.0 * max(yuv_diff.y, yuv_diff.z);
@@ -569,101 +718,254 @@ float4 mainImage(VertData v_in) : TARGET
         // Combine the two methods based on key tolerance
         alpha = lerp(alpha_rgb, alpha_yuv, key_tolerance_factor);
     }
+    else if (Key_method == 3) // Multi-Layer method
+    {
+        // Multi-Layer keying - inlined
+        float baseAlpha = 0.0;
+        
+        // Calculate base alpha based on dominant channel
+        if (keyColorWorking.g > keyColorWorking.r && keyColorWorking.g > keyColorWorking.b) {
+            baseAlpha = color.g - max(color.r, color.b);
+        } else if (keyColorWorking.b > keyColorWorking.r && keyColorWorking.b > keyColorWorking.g) {
+            baseAlpha = color.b - max(color.r, color.g);
+        } else {
+            baseAlpha = color.r - max(color.g, color.b);
+        }
+        
+        baseAlpha = baseAlpha * (1.0 + key_tolerance_factor);
+        
+        // Calculate luminance values
+        float colorLuma = dot(color.rgb, float3(0.2126, 0.7152, 0.0722));
+        float keyLuma = dot(keyColorWorking.rgb, float3(0.2126, 0.7152, 0.0722));
+        
+        // Define luminance zones
+        float shadowThreshold = keyLuma * 0.7;
+        float highlightThreshold = keyLuma * 1.3;
+        
+        float shadowAlpha = 0.0;
+        float midtoneAlpha = 0.0;
+        float highlightAlpha = 0.0;
+        
+        // Process shadow zone
+        if (colorLuma < shadowThreshold) {
+            float shadowFactor = 1.0 - (colorLuma / shadowThreshold);
+            shadowAlpha = baseAlpha * (1.0 - (shadowFactor * 0.5));
+        }
+        
+        // Process midtone zone
+        if (colorLuma >= shadowThreshold && colorLuma <= highlightThreshold) {
+            float midtoneFactor = 1.0 - (2.0 * abs(colorLuma - keyLuma) / (highlightThreshold - shadowThreshold));
+            midtoneAlpha = baseAlpha * midtoneFactor;
+        }
+        
+        // Process highlight zone
+        if (colorLuma > highlightThreshold) {
+            float highlightFactor = (colorLuma - highlightThreshold) / (1.0 - highlightThreshold);
+            highlightAlpha = baseAlpha * (1.0 - (highlightFactor * 0.3));
+        }
+        
+        // Combine results
+        alpha = max(shadowAlpha, max(midtoneAlpha, highlightAlpha));
+    }
+    
+    // Step 7: Process secondary key if multi-key is enabled
+    if (Enable_multi_key)
+    {
+        float3 hsvSecondary = rgb2hsv(Secondary_key_color.rgb);
+        
+        // Apply the same hue offset to align with primary key
+        hsvSecondary.x = hsvSecondary.x + hueOffset;
+        float3 secondaryRgb = hsv2rgb(hsvSecondary);
+        secondaryKeyWorking.rgb = secondaryRgb;
+        
+        // Process secondary key with the same method as primary
+        if (Key_method == 0) // RGB Difference
+        {
+            // Determine which channel to key against based on secondary key color
+            if (secondaryKeyWorking.g > secondaryKeyWorking.r && secondaryKeyWorking.g > secondaryKeyWorking.b) {
+                // Green screen
+                alphaSecondary = color.g - max(color.r, color.b);
+            }
+            else if (secondaryKeyWorking.b > secondaryKeyWorking.r && secondaryKeyWorking.b > secondaryKeyWorking.g) {
+                // Blue screen
+                alphaSecondary = color.b - max(color.r, color.g);
+            }
+            else {
+                // Red screen
+                alphaSecondary = color.r - max(color.g, color.b);
+            }
+            
+            // Apply key tolerance
+            alphaSecondary = alphaSecondary * (1.0 + key_tolerance_factor);
+        }
+        else if (Key_method == 1) // YUV Color Space
+        {
+            // Convert to YUV
+            float Y = 0.299 * color.r + 0.587 * color.g + 0.114 * color.b;
+            float U = ((color.b - Y) * 0.565) + 0.5;
+            float V = ((color.r - Y) * 0.713) + 0.5;
+            
+            // Secondary key color in YUV
+            float Y3 = 0.299 * secondaryKeyWorking.r + 0.587 * secondaryKeyWorking.g + 0.114 * secondaryKeyWorking.b;
+            float U3 = ((secondaryKeyWorking.b - Y3) * 0.565) + 0.5;
+            float V3 = ((secondaryKeyWorking.r - Y3) * 0.713) + 0.5;
+            
+            // Calculate color difference in YUV space
+            float3 yuv_diff_sec = abs(float3(Y, U, V) / float3(Y3, U3, V3) - 1.0);
+            
+            // Calculate alpha from color difference
+            alphaSecondary = 1.0 - (key_tolerance_factor + 1.0) * max(yuv_diff_sec.y, yuv_diff_sec.z);
+        }
+        else if (Key_method == 2 || Key_method == 3) // Hybrid or Multi-Layer method
+        {
+            // For hybrid method, use a color distance approach for secondary
+            float colorDistance = 0.0;
+            {
+                float3 diff = abs(color.rgb - secondaryKeyWorking.rgb);
+                colorDistance = length(diff) / 1.732; // Normalize by sqrt(3)
+            }
+            
+            alphaSecondary = 1.0 - colorDistance;
+            alphaSecondary = saturate(alphaSecondary * (1.0 + key_tolerance_factor));
+        }
+        
+        // Blend primary and secondary keys based on weight factor
+        alpha = lerp(alpha, max(alpha, alphaSecondary), secondary_key_weight_factor);
+        
+        // Create multi-key visualization for preview
+        multiKeyMap.r = alpha;
+        multiKeyMap.g = alphaSecondary; 
+        multiKeyMap.b = max(alpha, alphaSecondary);
+    }
     
     // Store the raw alpha for edge detection
-    edge_matte.a = alpha;
+    edgeMatte.a = alpha;
     color.a = alpha;
     
-    // --------------- Process highlights and shadows ---------------
+    // Step 8: Process highlights and shadows in the matte
     
     // Handle bright areas that should be keyed (like reflections)
     if (matte_highlights_factor > 0.0)
     {
-        float highlight_diff = dot(color.rgb - key_color_working.rgb, float3(1.0, 1.0, 1.0));
-        color.a -= matte_highlights_factor * saturate(highlight_diff);
+        float highlightDiff = dot(color.rgb - keyColorWorking.rgb, float3(1.0, 1.0, 1.0));
+        color.a -= matte_highlights_factor * saturate(highlightDiff);
     }
     
     // Handle dark areas that should be keyed (like shadows)
     if (matte_shadows_factor > 0.0)
     {
-        float shadow_diff = dot((1.0 - color.rgb) - (1.0 - key_color_working.rgb), float3(1.0, 1.0, 1.0));
-        color.a -= matte_shadows_factor * saturate(shadow_diff);
+        float shadowDiff = dot((1.0 - color.rgb) - (1.0 - keyColorWorking.rgb), float3(1.0, 1.0, 1.0));
+        color.a -= matte_shadows_factor * saturate(shadowDiff);
     }
     
     // Process black shadows separately (to add back as shadows)
-    float black_shadow_alpha = 0.0;
+    float blackShadowAlpha = 0.0;
     if (shadow_amount > 0.0)
     {
         // Calculate shadow area based on darker areas different from key color
-        float shadow_diff = dot((1.0 - color.rgb) - (1.0 - key_color_working.rgb), float3(1.0, 1.0, 1.0));
-        black_shadow_alpha = shadow_amount * saturate(shadow_diff);
+        float shadowDiff = dot((1.0 - color.rgb) - (1.0 - keyColorWorking.rgb), float3(1.0, 1.0, 1.0));
+        blackShadowAlpha = shadow_amount * saturate(shadowDiff);
         
         // Apply shadow gradient
         if (shadow_position != 0.0)
         {
-            float screen_pos = v_in.uv.y;
-            float gradient_pos = 0.5 + shadow_position;
-            float t = clamp((screen_pos - (gradient_pos - shadow_softness)) / (2.0 * shadow_softness), 0.0, 1.0);
-            black_shadow_alpha *= t;
+            float screenPos = v_in.uv.y;
+            float gradientPos = 0.5 + shadow_position;
+            float t = clamp((screenPos - (gradientPos - shadow_softness)) / (2.0 * shadow_softness), 0.0, 1.0);
+            blackShadowAlpha *= t;
         }
         
         // Apply shadow matte if available
         if (Use_shadow_matte)
         {
-            float4 shadow_matte_color = Shadow_matte.Sample(textureSampler, v_in.uv);
-            float shadow_mask = max(shadow_matte_color.r, max(shadow_matte_color.g, shadow_matte_color.b));
-            black_shadow_alpha *= shadow_mask;
+            float4 shadowMatteColor = Shadow_matte.Sample(textureSampler, v_in.uv);
+            float shadowMask = max(shadowMatteColor.r, max(shadowMatteColor.g, shadowMatteColor.b));
+            blackShadowAlpha *= shadowMask;
         }
     }
     
-    // --------------- Apply matte controls ---------------
+    // Step 9: Apply matte controls for refining the key
     
     // Apply black point adjustment (background cleanup)
     color.a = color.a * matte_black_factor;
     
-    // Invert alpha for foreground/background logic
+    // Invert alpha for foreground/background logic (0=background, 1=foreground)
     color.a = 1.0 - color.a;
     
     // Apply white point adjustment (foreground opacity)
     color.a = saturate(color.a * matte_white_factor);
     
-    // Apply hair detail enhancement
-    float hair_detail_value = Hair_detail_enhance * 0.01;
+    // Step 10: Apply hair detail enhancement for better edges
     if (hair_detail_value > 0.0)
     {
-        // Calculate luminance-based detail to find fine structures like hair
-        float luma = dot(raw_color.rgb, float3(0.299, 0.587, 0.114));
-        float key_luma = dot(key_color_working.rgb, float3(0.299, 0.587, 0.114));
+        // Simplified, more stable hair detail enhancement
+        float rawLuma = dot(rawColor.rgb, float3(0.2126, 0.7152, 0.0722));
+        float keyLuma = dot(keyColorWorking.rgb, float3(0.2126, 0.7152, 0.0722));
         
-        // Look for darker areas within partially transparent regions
-        float detail_mask = saturate((key_luma - luma) * 2.0);
+        // Find edge areas (partially transparent)
+        float edgeMask = 1.0 - abs((color.a * 2.0) - 1.0);
+        edgeMask = pow(edgeMask, 0.5); // Broaden the edge area a bit
         
-        // Only apply to edge areas
-        float edge_area_mask = 1.0 - abs((color.a * 2.0) - 1.0);
-        detail_mask *= edge_area_mask;
+        // Simple luminance difference for detail detection
+        float lumaDiff = saturate(abs(rawLuma - keyLuma) * 2.0);
         
-        // Enhance alpha in these potential hair/detail areas
-        color.a = saturate(color.a + (detail_mask * hair_detail_value));
+        // Apply enhancement only in edge areas with detail
+        float enhancementMask = edgeMask * lumaDiff;
+        color.a = saturate(color.a + (enhancementMask * hair_detail_value));
     }
     
-    // Apply edge softness
+    // Step 11: Apply edge softness
     if (edge_softness_factor > 0.0)
     {
         // Calculate edge matte
-        edge_matte.a = 1.0 - abs(color.a * 2.0 - 1.0); // Find edges (where alpha is around 0.5)
-        edge_matte.a = pow(edge_matte.a, 2.0 - edge_softness_factor); // Adjust edge width based on softness
+        edgeMatte.a = 1.0 - abs(color.a * 2.0 - 1.0); // Find edges (where alpha is around 0.5)
+        edgeMatte.a = pow(edgeMatte.a, 2.0 - edge_softness_factor); // Adjust edge width based on softness
         
         // Soften the alpha at edges
-        float softened_alpha = lerp(color.a, 0.5, edge_matte.a * edge_softness_factor);
-        color.a = softened_alpha;
+        float softenedAlpha = lerp(color.a, 0.5, edgeMatte.a * edge_softness_factor);
+        color.a = softenedAlpha;
     }
     
     // Store edge matte for preview
-    edge_matte.rgb = edge_matte.aaa;
+    edgeMatte.rgb = edgeMatte.aaa;
     
-    // --------------- Color processing for the foreground ---------------
+    // Step 12: Apply spill reduction if enabled
+    if (spill_reduction_factor > 0.0)
+{
+    // Simpler despill based on Halsu_despill.shader
+    float spillRB = lerp(color.r, color.b, spill_balance_factor);
     
-    // Handle alpha and color adjustment
+    // Determine dominant channel
+    if (keyColorWorking.g > keyColorWorking.r && keyColorWorking.g > keyColorWorking.b) {
+        // Green screen case
+        if (color.g > spillRB) {
+            color.g = lerp(color.g, spillRB, spill_reduction_factor);
+        }
+        spillMatte.g = max(0.0, color.g - spillRB);
+    }
+    else if (keyColorWorking.b > keyColorWorking.r && keyColorWorking.b > keyColorWorking.g) {
+        // Blue screen case
+        if (color.b > spillRB) {
+            color.b = lerp(color.b, spillRB, spill_reduction_factor);
+        }
+        spillMatte.b = max(0.0, color.b - spillRB);
+    }
+    else {
+        // Red screen case
+        float spillGB = max(color.g, color.b);
+        if (color.r > spillGB) {
+            color.r = lerp(color.r, spillGB, spill_reduction_factor);
+        }
+        spillMatte.r = max(0.0, color.r - spillGB);
+    }
+    
+    // Apply unpremultiply if needed
+    if (spill_unpremultiply_factor > 0.0 && color.a > 0.0 && color.a < 0.99) {
+        color.rgb = lerp(color.rgb, color.rgb / max(color.a, 0.001), spill_unpremultiply_factor * (1.0 - color.a));
+    }
+}
+    
+    // Step 13: Handle alpha and color adjustment for the foreground
     if (color.a > 0.0)
     {
         if (color.a < 1.0)
@@ -672,159 +974,143 @@ float4 mainImage(VertData v_in) : TARGET
             if (premultiply_factor < 1.0)
             {
                 // Unpremultiply then repremultiply with custom factor
-                color.rgb = lerp(raw_color.rgb / max(color.a, 0.001), raw_color.rgb, premultiply_factor);
+                color.rgb = lerp(rawColor.rgb / max(color.a, 0.001), rawColor.rgb, premultiply_factor);
             }
             else if (premultiply_factor > 1.0)
             {
                 // Extra premultiplication for stronger alpha effect
                 float extra = (premultiply_factor - 1.0);
-                color.rgb = lerp(raw_color.rgb, raw_color.rgb * color.a, extra);
+                color.rgb = lerp(rawColor.rgb, rawColor.rgb * color.a, extra);
             }
             else
             {
                 // At exactly 1.0, use raw color
-                color.rgb = raw_color.rgb;
+                color.rgb = rawColor.rgb;
             }
         }
         else
         {
             // Fully opaque areas get raw color
-            color.rgb = raw_color.rgb;
+            color.rgb = rawColor.rgb;
         }
     }
     
-    // --------------- Spill removal ---------------
-    
-    // Create spill matte for preview
-    spill_matte.rgb = float3(0.0, 0.0, 0.0);
-    
-    if (spill_reduction_factor > 0.0)
-    {
-        float spill_amount = 0.0;
-        float spill_compare = 0.0;
-        
-        // Calculate how much to reduce spill based on the red-blue balance
-        float spill_rb = lerp(color.r, color.b, spill_balance_factor);
-        
-        if (color.g > spill_rb)
-        {
-            // Calculate the amount of spill (green exceeding the red/blue)
-            spill_amount = color.g - spill_rb;
-            
-            // Store spill matte for preview
-            spill_matte.g = spill_amount;
-            
-            // Apply spill contrast
-            if (spill_contrast_factor != 0.0)
-            {
-                spill_amount = lerp(spill_amount, pow(spill_amount, 2.0), spill_contrast_factor);
-            }
-            
-            // Apply spill reduction
-            color.g = lerp(color.g, spill_rb, spill_amount * spill_reduction_factor);
-        }
-        
-        // Apply spill unpremultiply to edges
-        if (spill_unpremultiply_factor > 0.0 && color.a < 0.99)
-        {
-            float edge_factor_value = (1.0 - color.a) * spill_unpremultiply_factor;
-            color.rgb = safeColorCorrection(color.rgb, key_color_working.rgb, edge_factor_value * spill_amount);
-        }
-    }
-    
-    // --------------- Apply matte overlays ---------------
+    // Step 14: Apply matte overlays
     
     // Apply garbage matte (exclude areas)
     if (Use_garbage_matte)
     {
-        float4 garbage_color = Garbage_matte.Sample(textureSampler, v_in.uv);
-        float garbage_mask = max(garbage_color.r, max(garbage_color.g, garbage_color.b));
-        color.a = color.a - (1.0 - garbage_mask);
+        float4 garbageColor = Garbage_matte.Sample(textureSampler, v_in.uv);
+        float garbageMask = max(garbageColor.r, max(garbageColor.g, garbageColor.b));
+        color.a = max(0.0, color.a - (1.0 - garbageMask));
     }
     
     // Apply inside matte (include areas)
     if (Use_inside_matte)
     {
-        float4 inside_color = Inside_matte.Sample(textureSampler, v_in.uv);
-        float inside_mask = max(inside_color.r, max(inside_color.g, inside_color.b));
-        color.a = color.a + inside_mask;
+        float4 insideColor = Inside_matte.Sample(textureSampler, v_in.uv);
+        float insideMask = max(insideColor.r, max(insideColor.g, insideColor.b));
+        color.a = min(1.0, color.a + insideMask);
         
         // Preserve original color in inside matte areas if enabled
-        if (Preserve_inside_color && inside_mask > 0.0)
+        if (Preserve_inside_color && insideMask > 0.0)
         {
-            color.rgb = lerp(color.rgb, raw_color.rgb, inside_mask);
+            color.rgb = lerp(color.rgb, rawColor.rgb, insideMask);
         }
     }
     
     // Add shadow if enabled
-    if (black_shadow_alpha > 0.0)
+    if (blackShadowAlpha > 0.0)
     {
         // Blend shadow with main alpha
-        color.rgb = lerp(color.rgb, float3(0.0, 0.0, 0.0), black_shadow_alpha * (1.0 - color.a));
-        color.a = saturate(color.a + black_shadow_alpha);
+        color.rgb = lerp(color.rgb, float3(0.0, 0.0, 0.0), blackShadowAlpha * (1.0 - color.a));
+        color.a = saturate(color.a + blackShadowAlpha);
     }
     
-    // --------------- Apply temporal filtering if enabled ---------------
+    // Step 15: Apply edge defringing if enabled
+    if (defringe_value > 0.0)
+    {
+        // Edge defringing - inlined
+        // Only apply to partially transparent areas
+        if (color.a < 1.0) {
+            float edgeDefringeValue = (1.0 - color.a) * defringe_value;
+            
+            // Determine dominant channel
+            float keyMax = max(keyColorWorking.r, max(keyColorWorking.g, keyColorWorking.b));
+            
+            // Green screen case
+            if (keyColorWorking.g > 0.4 && keyColorWorking.g >= keyColorWorking.r && keyColorWorking.g >= keyColorWorking.b) {
+                float adjust = keyColorWorking.g / max(0.001, keyMax);
+                color.g *= (1.0 - (edgeDefringeValue * adjust));
+                color.rb *= (1.0 + (edgeDefringeValue * 0.2));
+            } 
+            // Blue screen case
+            else if (keyColorWorking.b > 0.4 && keyColorWorking.b >= keyColorWorking.g && keyColorWorking.b >= keyColorWorking.r) {
+                float adjust = keyColorWorking.b / max(0.001, keyMax);
+                color.b *= (1.0 - (edgeDefringeValue * adjust));
+                color.rg *= (1.0 + (edgeDefringeValue * 0.2));
+            }
+            // Red screen case
+            else if (keyColorWorking.r > 0.4 && keyColorWorking.r >= keyColorWorking.g && keyColorWorking.r >= keyColorWorking.b) {
+                float adjust = keyColorWorking.r / max(0.001, keyMax);
+                color.r *= (1.0 - (edgeDefringeValue * adjust));
+                color.gb *= (1.0 + (edgeDefringeValue * 0.2));
+            }
+        }
+    }
     
+    // Step 16: Apply temporal filtering if enabled
+    float4 filteredColor = color;
+    // Step 16: Apply temporal filtering if enabled
     if (Enable_temporal && temporal_blend > 0.0)
     {
-        float4 prev_frame = Last_frame.Sample(textureSampler, v_in.uv);
+        prevFrame = Last_frame.Sample(textureSampler, v_in.uv);
         
-        // Blend current frame with previous frame
-        color = lerp(color, prev_frame, temporal_blend);
+        // Calculate a blend factor that reduces flickering
+        float blendFactor = temporal_blend;
+        
+        if (Motion_aware)
+        {
+            // Calculate motion but with reduced sensitivity to small changes
+            float3 frameDiff = abs(color.rgb - prevFrame.rgb);
+            float motionAmount = saturate(dot(frameDiff, float3(0.2126, 0.7152, 0.0722)) - 0.05);
+            
+            // Use higher threshold for alpha changes to reduce edge flickering
+            float alphaDiff = saturate(abs(color.a - prevFrame.a) - 0.05);
+            
+            // Adjust temporal strength - maintain more temporal filtering even with motion
+            blendFactor = temporal_blend * (1.0 - (motionAmount * 1.5));
+            blendFactor = max(temporal_blend * 0.25, blendFactor); // Keep minimum filtering
+            
+            // Reduce strength in edge areas but not as drastically
+            blendFactor *= (1.0 - (alphaDiff * 0.5));
+            
+            motionMap.rgb = float3(motionAmount, motionAmount, motionAmount);
+        }
+        
+        // Apply filtered blend
+        color = lerp(color, prevFrame, blendFactor);
     }
     
-    // --------------- Apply color correction to final result ---------------
+    // Step 17: Apply color correction to final result
     
     // Apply color correction only to non-transparent areas
     if (color.a > 0.0)
     {
-        // Apply edge defringing to remove green/blue tint from edges
-        float defringe_value = Edge_color_remove * 0.01;
-        if (defringe_value > 0.0)
-        {
-            // Find edge areas (partially transparent)
-            float edge_defringe_value = (1.0 - color.a) * defringe_value;
-            
-            // Remove key color contamination from edge pixels
-            float3 defringe_color = color.rgb;
-            
-            // Analyze key color channels to determine which to suppress
-            float key_max = max(key_color_working.r, max(key_color_working.g, key_color_working.b));
-            
-            if (key_color_working.g > 0.4) // Green screen
-            {
-                // Suppress green, enhance red/blue
-                float adjust = key_color_working.g / max(0.001, key_max);
-                defringe_color.g *= (1.0 - (edge_defringe_value * adjust));
-                defringe_color.rb *= (1.0 + (edge_defringe_value * 0.2));
-            }
-            else if (key_color_working.b > 0.4) // Blue screen
-            {
-                // Suppress blue, enhance red/green
-                float adjust = key_color_working.b / max(0.001, key_max);
-                defringe_color.b *= (1.0 - (edge_defringe_value * adjust));
-                defringe_color.rg *= (1.0 + (edge_defringe_value * 0.2));
-            }
-            
-            // Apply defringing
-            color.rgb = lerp(color.rgb, defringe_color, edge_defringe_value);
-        }
-        
         // Convert to HSV for better color manipulation
-        float3 hsv_final = rgb2hsv(color.rgb);
+        float3 hsvFinal = rgb2hsv(color.rgb);
         
         // Apply hue shift
-        hsv_final.x = frac(hsv_final.x + hue_adjustment);
+        hsvFinal.x = frac(hsvFinal.x + hue_adjustment);
         
         // Apply saturation
-        hsv_final.y = saturate(hsv_final.y * saturation_adjustment);
+        hsvFinal.y = saturate(hsvFinal.y * saturation_adjustment);
         
         // Apply brightness
-        hsv_final.z = saturate(hsv_final.z * (1.0 + brightness_adjustment));
+        hsvFinal.z = saturate(hsvFinal.z * (1.0 + brightness_adjustment));
         
         // Convert back to RGB
-        color.rgb = hsv2rgb(hsv_final);
+        color.rgb = hsv2rgb(hsvFinal);
         
         // Apply contrast (after HSV adjustments)
         if (contrast_adjustment != 1.0)
@@ -834,15 +1120,15 @@ float4 mainImage(VertData v_in) : TARGET
         }
     }
     
-    // Restore hue shift to match original video
-    hsv_color = rgb2hsv(color.rgb);
-    hsv_color.x = hsv_color.x - hue_offset;
-    color.rgb = hsv2rgb(hsv_color);
+    // Restore hue shift to match original video (undo the keying alignment)
+    float3 hsvFinal = rgb2hsv(color.rgb);
+    hsvFinal.x = hsvFinal.x - hueOffset;
+    color.rgb = hsv2rgb(hsvFinal);
     
     // Ensure zero alpha gives black RGB (prevents fringing)
     color.rgb *= color.a;
     
-    // Handle preview modes
+    // Step 18: Handle preview modes
     switch (Preview_mode)
     {
         case 0: // Final result
@@ -853,19 +1139,28 @@ float4 mainImage(VertData v_in) : TARGET
             color.a = 1.0;
             break;
         case 2: // Pre-processed foreground
-            color = prekey_color;
+            color = prekeyColor;
             color.a = 1.0;
             break;
         case 3: // Processed foreground
             color.a = 1.0;
             break;
         case 4: // Edge matte
-            color = edge_matte;
+            color = edgeMatte;
             color.a = 1.0;
             break;
         case 5: // Spill matte
-            color = spill_matte;
+            color = spillMatte;
             color.a = 1.0;
+            break;
+        case 6: // Adaptive sampling map
+            color = adaptiveSampleMap;
+            break;
+        case 7: // Multi-key blend
+            color = multiKeyMap;
+            break;
+        case 8: // Motion detection map
+            color = motionMap;
             break;
     }
     

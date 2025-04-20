@@ -1,12 +1,12 @@
 # Enhanced Hybrid Keyer 3.0
 
-**Author:** RazvanO2 (Razvan Olariu)  
-**GitHub:** [https://github.com/RazvanO2](https://github.com/RazvanO2)  
 **Based on:** Hybrid Keyer by Eki "Halsu" Halkka  
 
 ## Overview
 
 Enhanced Hybrid Keyer 3.0 is a professional-grade chroma key shader for OBS Studio using the obs-shaderfilter plugin. This shader features advanced keying algorithms, precise edge controls, and specialized tools for handling difficult keying situations like hair edges and uneven lighting.
+
+![Enhanced Hybrid Keyer Interface](example.png)
 
 ## Features
 
