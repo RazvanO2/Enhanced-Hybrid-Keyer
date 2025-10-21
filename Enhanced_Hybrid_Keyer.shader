@@ -496,12 +496,12 @@ float4 mainImage(VertData v_in) : TARGET
         
         // First scan the perimeter of the search area to find good green screen samples
         // This avoids sampling from the subject which is typically more central
-        for (int pass = 0; pass < 2; pass++) {
+        for (int scan_pass = 0; scan_pass < 2; scan_pass++) {
             for (int i = -sampleRadius; i <= sampleRadius; i++) {
                 for (int j = -sampleRadius; j <= sampleRadius; j++) {
-                    // In first pass, only check perimeter points
-                    // In second pass, check all points if we haven't found a good sample yet
-                    if (pass == 0 && 
+                    // In first scan_pass, only check perimeter points
+                    // In second scan_pass, check all points if we haven't found a good sample yet
+                    if (scan_pass == 0 && 
                         !(i == -sampleRadius || i == sampleRadius || 
                           j == -sampleRadius || j == sampleRadius)) {
                         continue;
@@ -528,8 +528,8 @@ float4 mainImage(VertData v_in) : TARGET
                 }
             }
             
-            // If we found a good sample in the first pass, no need for second pass
-            if (bestGreenDominance > 0.0 && pass == 0) {
+            // If we found a good sample in the first scan_pass, no need for second scan_pass
+            if (bestGreenDominance > 0.0 && scan_pass == 0) {
                 break;
             }
         }
