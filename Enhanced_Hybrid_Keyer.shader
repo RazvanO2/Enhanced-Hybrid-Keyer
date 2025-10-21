@@ -66,15 +66,6 @@ uniform bool Enable_adaptive_sampling<
   string group = "1. Key Settings";
 > = false;
 
-uniform float Adaptive_sampling_radius<
-  string label = "Adaptive Sampling Radius";
-  string widget_type = "slider";
-  string group = "1. Key Settings";
-  float minimum = 1.0;
-  float maximum = 10.0;
-  float step = 1.0;
-> = 3.0;
-
 uniform float Prekey_despill<
   string label = "Prekey Despill";
   string widget_type = "slider";
@@ -492,7 +483,7 @@ float4 mainImage(VertData v_in) : TARGET
         float4 adaptiveKeyColor = Key_color; // Start with the user-selected key color as fallback
         float bestGreenDominance = 0.0;
         
-        int sampleRadius = int(Adaptive_sampling_radius);
+        int sampleRadius = 3.0;
         
         // First scan the perimeter of the search area to find good green screen samples
         // This avoids sampling from the subject which is typically more central
