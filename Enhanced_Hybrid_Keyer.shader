@@ -66,15 +66,6 @@ uniform bool Enable_adaptive_sampling<
   string group = "1. Key Settings";
 > = false;
 
-uniform float Adaptive_sampling_radius<
-  string label = "Adaptive Sampling Radius";
-  string widget_type = "slider";
-  string group = "1. Key Settings";
-  float minimum = 1.0;
-  float maximum = 10.0;
-  float step = 1.0;
-> = 3.0;
-
 uniform float Prekey_despill<
   string label = "Prekey Despill";
   string widget_type = "slider";
@@ -492,16 +483,16 @@ float4 mainImage(VertData v_in) : TARGET
         float4 adaptiveKeyColor = Key_color; // Start with the user-selected key color as fallback
         float bestGreenDominance = 0.0;
         
-        int sampleRadius = int(Adaptive_sampling_radius);
+        int sampleRadius = 3.0;
         
         // First scan the perimeter of the search area to find good green screen samples
         // This avoids sampling from the subject which is typically more central
-        for (int pass = 0; pass < 2; pass++) {
+        for (int scan_pass = 0; scan_pass < 2; scan_pass++) {
             for (int i = -sampleRadius; i <= sampleRadius; i++) {
                 for (int j = -sampleRadius; j <= sampleRadius; j++) {
-                    // In first pass, only check perimeter points
-                    // In second pass, check all points if we haven't found a good sample yet
-                    if (pass == 0 && 
+                    // In first scan_pass, only check perimeter points
+                    // In second scan_pass, check all points if we haven't found a good sample yet
+                    if (scan_pass == 0 && 
                         !(i == -sampleRadius || i == sampleRadius || 
                           j == -sampleRadius || j == sampleRadius)) {
                         continue;
@@ -528,8 +519,8 @@ float4 mainImage(VertData v_in) : TARGET
                 }
             }
             
-            // If we found a good sample in the first pass, no need for second pass
-            if (bestGreenDominance > 0.0 && pass == 0) {
+            // If we found a good sample in the first scan_pass, no need for second scan_pass
+            if (bestGreenDominance > 0.0 && scan_pass == 0) {
                 break;
             }
         }
